@@ -503,8 +503,7 @@ class SUTServer(SUT):
                             if first:
                                 self.first_token_queue.put((token, response_ids[0]))
                                 first = False
-                            else:
-                                token_cache.append(token)
+                            token_cache.append(token)
         return token_cache
 
     def stream_api_grpc(self, input, response_ids, idx):
@@ -517,8 +516,7 @@ class SUTServer(SUT):
                 if first:
                     self.first_token_queue.put((token, response_ids[0]))
                     first = False
-                else:
-                    token_cache.append(token)
+                token_cache.append(token)
         return token_cache
     
     def stream_api_vllm(self, input, response_ids, idx):
@@ -558,10 +556,10 @@ class SUTServer(SUT):
                                     if first:
                                         self.first_token_queue.put((token, response_ids[0]))
                                         first = False
-                                    else:
-                                        token_cache.append(token)
+                                    token_cache.append(token)
                 s.close()
-                return token_cache
+                if token_cache:
+                    return token_cache
             except:
                 s.close()
                 print("Connection failure")
@@ -577,6 +575,10 @@ class SUTServer(SUT):
             output_tokens = self.stream_api(decoded, response_ids, idx)
 
         n_tokens = len(output_tokens)
+        if n_tokens <= 1:
+            print("WARNING: caught low token count")
+            print(input_ids_tensor)
+            print(output_tokens)
         response_array = array.array("B", np.array(output_tokens, np.int32).tobytes())
         bi = response_array.buffer_info()
         response = [lg.QuerySampleResponse(
