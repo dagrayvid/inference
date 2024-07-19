@@ -7,7 +7,7 @@ import array
 import torch
 from torch.nn.functional import pad
 from torch.utils.data import DataLoader
-from transformers import AutoModelForCausalLM, AutoTokenizer, LlamaForCausalLM
+from transformers import AutoModelForCausalLM, LlamaTokenizer, LlamaForCausalLM
 from transformers.generation.streamers import BaseStreamer
 
 import pickle
@@ -125,7 +125,7 @@ class SUT():
 
         if not batch_size:
             if device == "cpu":
-                batch_size = 2000
+                batch_size = 512
             else:
                 batch_size = 32  # Reduce to 8 if using 4 GPUs, 16 for 8.
 
@@ -207,7 +207,7 @@ class SUT():
             except:
                 print("connection failure")
         return json.loads(response.text)["generated_text"]
-    
+
     def query_api_vllm(self, inputs, idx):
         headers = {
             'Content-Type': 'application/json',
@@ -236,7 +236,7 @@ class SUT():
     def query_api_batch_grpc(self, inputs, idx):
         resps = self.grpc_clients[idx].make_request(inputs, model_id=self.api_model_name)
         return [resp.text for resp in resps.responses]
-    
+
     def api_action_handler(self, chunk, server_idx):
         if self.grpc:
             if self.batch_grpc:
@@ -388,10 +388,13 @@ class SUT():
         except:
             pass
 
-        self.tokenizer = AutoTokenizer.from_pretrained(
+        print(f"LOADING LLAMA TOKENIZER FROM PATH: {self.model_path}")
+        self.tokenizer = LlamaTokenizer.from_pretrained(
             self.model_path,
             model_max_length=1024,
             padding_side="left",
+            add_prefix_space=False,
+            add_bos_token = False,
             use_fast=True,) #changed from false
 
         self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -431,18 +434,19 @@ class SUT():
 
 class SUTServer(SUT):
     def __init__(self, model_path=None, api_server=None, additional_servers=[], api_model_name=None, grpc=False, batch_grpc=False, vllm=False, dtype="bfloat16", device="cpu", total_sample_count=24576, dataset_path=None, batch_size=None, workers=1):
+        print("initializing SUTServer")
 
         super().__init__(model_path=model_path, api_server=api_server, additional_servers=additional_servers, api_model_name=api_model_name, grpc=grpc, vllm=vllm, dtype=dtype, device=device, total_sample_count=total_sample_count, dataset_path=dataset_path, batch_size=batch_size, workers=workers)
 
-        with open(f"{self.model_path}/tokenizer.json", 'r') as token_file:
-            llama_tokenizer = json.load(token_file)
-        self.llama_vocab = llama_tokenizer["model"]["vocab"]
+#        with open(f"{self.model_path}/tokenizer.json", 'r') as token_file:
+#            llama_tokenizer = json.load(token_file)
+#        self.llama_vocab = llama_tokenizer["model"]["vocab"]
 
         self.first_token_queue = queue.Queue()
-        
 
     def start(self):
 
+        print(f"Starting {self.num_workers} workers")
         # Create worker threads
         for j in range(self.num_workers):
             worker = threading.Thread(target=self.process_queries)
@@ -520,7 +524,7 @@ class SUTServer(SUT):
                     first = False
                 token_cache.append(token)
         return token_cache
-    
+
     def stream_api_vllm(self, input, response_ids, idx):
         headers = {
             'Content-Type': 'application/json',
@@ -532,12 +536,13 @@ class SUTServer(SUT):
             'max_tokens': 1024,
             'temperature': 0,
             'stream': True,
+            #'stream_options': {'include_usage': True},
             'logprobs': 1
         }
 
         while True:
             try:
-                token_cache = []
+                token_s_cache = []
                 s = requests.Session()
                 first = True
                 with s.post(
@@ -551,20 +556,38 @@ class SUTServer(SUT):
                         if line:
                             decoded = line.decode()
                             if decoded.startswith("data") and "[DONE]" not in decoded:
-                                inter = json.loads(decoded[6:])["choices"][0]["logprobs"]
+                                data = json.loads(decoded[6:])
+                                finish_reason = data["choices"][0]["finish_reason"]
+                                stop_reason = data["choices"][0]["stop_reason"]
+                                if (finish_reason is not None) or (stop_reason is not None):
+                                    if finish_reason == "stop":
+                                        token_s = self.tokenizer.eos_token
+                                        token_s_cache.append(token_s)
+                                    else:
+                                        print(f"Sequence finished without hitting eos token, finish_reason: {finish_reason}, stop_reason: {stop_reason}")
+                                    continue
+
+                                inter = data["choices"][0]["logprobs"]
                                 if "top_logprobs" in inter:
                                     token_s = list(inter["top_logprobs"][0].keys())[0]
-                                    token = self.llama_vocab[token_s]
+                                    if token_s == "":
+                                        #print(f"Warning: empty token. Last non-empty token was: \"{token_s_cache[-1]}\"")
+                                        continue
+
                                     if first:
-                                        self.first_token_queue.put((token, response_ids[0]))
+                                        token_ids = self.tokenizer.encode(token_s)
+                                        self.first_token_queue.put((token_ids[0], response_ids[0]))
                                         first = False
-                                    token_cache.append(token)
+                                    token_s_cache.append(str(token_s))
                 s.close()
-                if token_cache:
-                    return token_cache
-            except:
+                if token_s_cache:
+                    print("Request completed!")
+                    #print(token_s_cache)
+                    #print("".join(token_s_cache))
+                    return self.tokenizer.encode("".join(token_s_cache))
+            except Exception as e:
                 s.close()
-                print("Connection failure")
+                print(f"Connection failure: {e}")
 
     def async_process_query(self, input_ids_tensor, qitem_id, idx):
         decoded = self.tokenizer.decode(input_ids_tensor[0])
