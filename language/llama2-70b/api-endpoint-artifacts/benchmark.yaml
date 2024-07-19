@@ -1,15 +1,16 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: mlperf-inference
+  name: mlperf-inference-3
 spec:
   restartPolicy: Never
   containers:
   - name: mlperf-env
-    image: quay.io/dagrayvid/mlperf-inference:v4.1
+    image: quay.io/dagray/mlperf-inference:v4.1-240718
+    imagePullPolicy: Always
     resources:
       requests:
-        memory: 20000Mi
+        memory: 32Gi 
     volumeMounts:
     - mountPath: /dev/shm
       name: dshm
@@ -18,4 +19,5 @@ spec:
   volumes:
   - name: dshm
     emptyDir:
+      sizeLimit: 16Gi 
       medium: Memory
