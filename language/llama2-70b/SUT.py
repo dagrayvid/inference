@@ -229,14 +229,14 @@ class SUT():
                 print("connection failure")
 
         # De-tokenize here?
-        ret = [resp["text"] for resp in json.loads(response.text)["choices"]]
-        #print(f"Thread ret[0]: {ret[0]}")
-        tokenized = self.tokenizer(ret, return_attention_mask=False, return_tensors='np')['input_ids'].astype(np.int32)
-        #print(f"Thread tokenized: {tokenized}")
-        print(f"Thread tokenized.shape: {tokenized.shape}")
-        #print(f"Thread tokenized[0]: {tokenized[0]}")
+        responses = [resp["text"] for resp in json.loads(response.text)["choices"]]
 
-        return tokenized
+        tokenized_resp = self.tokenizer(responses, return_attention_mask=False, return_tensors='np')['input_ids']
+        tokenized_resp = np.array([tok_ids.astype(np.int32) for tok_ids in tokenized_resp], dtype=object)
+
+        print(f"Thread tokenized_resp.shape: {tokenized_resp.shape}")
+
+        return tokenized_resp
 
     def query_api_grpc(self, input, idx):
         resp = self.grpc_clients[idx].make_request([input], model_id=self.api_model_name)
@@ -619,7 +619,7 @@ class SUTServer(SUT):
 
                 s.close()
                 if token_s_cache:
-                    print("Request completed!")
+                    #print("Request completed!")
                     #print(token_s_cache)
                     #print("".join(token_s_cache))
                     return self.tokenizer.encode("".join(token_s_cache))
@@ -662,6 +662,7 @@ class SUTServer(SUT):
             input_masks_tensor = self.data_object.attention_masks[qitem.index]
 
             if self.api_servers:
+                print(f"Number of threads: {threading.active_count()}")
                 threading.Thread(target=self.async_process_query, args=(input_ids_tensor, qitem.id, server_idx)).start()
                 server_idx = (server_idx + 1) % len(self.api_servers)
             else:
