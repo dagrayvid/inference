@@ -227,7 +227,16 @@ class SUT():
                 response_code = response.status_code
             except:
                 print("connection failure")
-        return [resp["text"] for resp in json.loads(response.text)["choices"]]
+
+        # De-tokenize here?
+        ret = [resp["text"] for resp in json.loads(response.text)["choices"]]
+        #print(f"Thread ret[0]: {ret[0]}")
+        tokenized = self.tokenizer(ret, return_attention_mask=False, return_tensors='np')['input_ids'].astype(np.int32)
+        #print(f"Thread tokenized: {tokenized}")
+        print(f"Thread tokenized.shape: {tokenized.shape}")
+        #print(f"Thread tokenized[0]: {tokenized[0]}")
+
+        return tokenized
 
     def query_api_grpc(self, input, idx):
         resp = self.grpc_clients[idx].make_request([input], model_id=self.api_model_name)
@@ -297,19 +306,33 @@ class SUT():
                 assert input_ids_tensor.shape[0] <= self.batch_size
 
                 if self.api_servers:
-                    decoded = self.tokenizer.batch_decode(input_ids_tensor)
-                    cleaned = [entry.replace('</s>','').replace('<s>','') for entry in decoded]
-                    cleaned_chunks = [list(c) for c in mit.divide(len(self.api_servers), cleaned)]
+                    print("Starting tokenizer decode of batches")
+                    print(f"Input_ids_tensor.shape: {input_ids_tensor.shape}")
+                    #decoded = self.tokenizer.batch_decode(input_ids_tensor)
+                    #cleaned = [entry.replace('</s>','').replace('<s>','') for entry in decoded]
+                    #cleaned_chunks = [list(c) for c in mit.divide(len(self.api_servers), cleaned)]
+
+                    cleaned_input_ids = [[x for x in request if x not in [1, 2]] for request in input_ids_tensor.tolist()]
+                    cleaned_chunks = [list(c) for c in mit.divide(len(self.api_servers), cleaned_input_ids)]
+
+                    #print(f"Example of cleaned_chunk[0][0]: {cleaned_chunks[0][0]}")
+
 
                 tik2 = time.time()
 
                 if self.api_servers:
                     with ThreadPoolExecutor(max_workers=len(self.api_servers)) as executor:
-                        #needs to be tested
+                        # Detokenize in the thread instead of here?
                         output_chunks = list(executor.map(self.api_action_handler,cleaned_chunks,range(len(self.api_servers))))
-                    output = []
-                    for row in output_chunks:
-                        output += row
+
+                    output = np.concatenate(output_chunks, 0)
+                    print(f"output.shape: {output.shape}")
+                    print(f"output[0]: {output[0]}")
+                    #output = []
+
+                    #for row in output_chunks:
+                    #    print(f"Row in output_chunks: {row}")
+                    #    output += row
                 else:
                     pred_output_tokens = self.model.generate(
                         input_ids=input_ids_tensor,
@@ -321,14 +344,17 @@ class SUT():
                 tik3 = time.time()
 
                 if self.api_servers:
-                    processed_output = np.array(self.tokenizer(output, padding='longest')['input_ids'])
+                    #processed_output = np.array(self.tokenizer(output, padding='longest')['input_ids'])
+                    processed_output = output
+                    print(f"Processed output[0]: {processed_output[0]}")
                 else:
                     processed_output = self.data_object.postProcess(pred_output_tokens,
                                                                     input_seq_lens=input_len,
                                                                     query_id_list=query_ids)
 
             for i in range(len(qitem)):
-                unpadded = np.delete(processed_output[i], np.where(processed_output[i] == 2))
+                #unpadded = np.delete(processed_output[i], np.where(processed_output[i] == 2))
+                unpadded = processed_output[i] # already unpadded in threads
                 n_tokens = unpadded.shape[0]
                 response_array = array.array("B", unpadded.tobytes())
                 bi = response_array.buffer_info()
@@ -389,12 +415,13 @@ class SUT():
             pass
 
         print(f"LOADING LLAMA TOKENIZER FROM PATH: {self.model_path}")
+
         self.tokenizer = LlamaTokenizer.from_pretrained(
             self.model_path,
             model_max_length=1024,
             padding_side="left",
-            add_prefix_space=False,
-            add_bos_token = False,
+            add_prefix_space=True,
+            add_bos_token = True,
             use_fast=True,) #changed from false
 
         self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -441,6 +468,13 @@ class SUTServer(SUT):
 #        with open(f"{self.model_path}/tokenizer.json", 'r') as token_file:
 #            llama_tokenizer = json.load(token_file)
 #        self.llama_vocab = llama_tokenizer["model"]["vocab"]
+        self.tokenizer = LlamaTokenizer.from_pretrained(
+            self.model_path,
+            model_max_length=1024,
+            padding_side="left",
+            add_prefix_space=False,
+            add_bos_token = False,
+            use_fast=True,) #changed from false
 
         self.first_token_queue = queue.Queue()
 
@@ -537,7 +571,7 @@ class SUTServer(SUT):
             'temperature': 0,
             'stream': True,
             #'stream_options': {'include_usage': True},
-            'logprobs': 1
+            #'logprobs': 1
         }
 
         while True:
@@ -567,18 +601,22 @@ class SUTServer(SUT):
                                         print(f"Sequence finished without hitting eos token, finish_reason: {finish_reason}, stop_reason: {stop_reason}")
                                     continue
 
-                                inter = data["choices"][0]["logprobs"]
-                                if "top_logprobs" in inter:
-                                    token_s = list(inter["top_logprobs"][0].keys())[0]
-                                    if token_s == "":
-                                        #print(f"Warning: empty token. Last non-empty token was: \"{token_s_cache[-1]}\"")
-                                        continue
+                                #inter = data["choices"][0]["logprobs"]
+                                #if "top_logprobs" in inter:
+                                #    token_s = list(inter["top_logprobs"][0].keys())[0]
 
-                                    if first:
-                                        token_ids = self.tokenizer.encode(token_s)
-                                        self.first_token_queue.put((token_ids[0], response_ids[0]))
-                                        first = False
-                                    token_s_cache.append(str(token_s))
+                                token_s = data["choices"][0]["text"]
+
+                                if token_s == "":
+                                    #print(f"Warning: empty token. Last non-empty token was: \"{token_s_cache[-1]}\"")
+                                    continue
+
+                                if first:
+                                    token_ids = self.tokenizer.encode(token_s)
+                                    self.first_token_queue.put((token_ids[0], response_ids[0]))
+                                    first = False
+                                token_s_cache.append(str(token_s))
+
                 s.close()
                 if token_s_cache:
                     print("Request completed!")

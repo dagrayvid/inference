@@ -19,7 +19,7 @@ spec:
     - --tensor-parallel-size=2
     - --max-model-len=2048
     - --enable-chunked-prefill
-    - --gpu-memory-utilization=0.90
+    - --gpu-memory-utilization=0.95
     - --max-num-seqs=512
     # - --dtype=fp8
     # - --kv-cache-dtype=fp8
