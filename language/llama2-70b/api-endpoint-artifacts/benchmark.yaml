@@ -1,12 +1,12 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: mlperf-inference-3
+  name: mlperf-inference-240724
 spec:
   restartPolicy: Never
   containers:
   - name: mlperf-env
-    image: quay.io/dagray/mlperf-inference:v4.1-240718
+    image: quay.io/dagray/mlperf-inference:v4.1-240724
     imagePullPolicy: Always
     resources:
       requests:
