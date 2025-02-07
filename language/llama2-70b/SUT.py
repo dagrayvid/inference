@@ -214,7 +214,7 @@ class SUT():
         }
 
         json_data = {
-            'model': '/mnt/models/',
+            'model': self.api_model_name,
             'prompt': inputs,
             'max_tokens': 1024,
             'temperature': 0,
@@ -565,7 +565,7 @@ class SUTServer(SUT):
         }
 
         json_data = {
-            'model': '/mnt/models/',
+            'model': self.api_model_name,
             'prompt': input,
             'max_tokens': 1024,
             'temperature': 0,
